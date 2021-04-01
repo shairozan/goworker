@@ -104,12 +104,51 @@ func (w *worker) work(jobs <-chan *Job, monitor *sync.WaitGroup) {
 			}
 		}()
 		for job := range jobs {
-			if workerFunc, ok := workers[job.Payload.Class]; ok {
+			//Need to restructure to handle reading down into the payload. In older
+			//Versions of Ruby, the Class is not expressed up front (Which is a sidekiq convention)
+
+			//Payload = {github.com/shairozan/goworker.Payload}
+			// Class = {string} "ActiveJob::QueueAdapters::ResqueAdapter::JobWrapper"
+			// Args = {[]interface {}} len:1, cap:4
+			//  0 = {interface {} | map[string]interface {}}
+			//   0 = job_class -> CreateStack
+			//   1 = job_id -> 20a0cbe7-42d3-43f1-808b-35787aa20263
+			//   2 = queue_name -> default
+			//   3 = arguments -> len:1, cap:1
+			//   4 = locale -> en
+
+			if len(job.Payload.Args) == 0 {
+				logger.Critical("unable to extract arguments from data collected from redis")
+				return
+			}
+
+			//Let's get the arguments list
+			args := job.Payload.Args[0]
+			var jobArguments []string
+			var jobClass string
+
+			if argsMap, ok := args.(map[string]interface{}); ok {
+				jc := argsMap["job_class"]
+				if jcs, ok := jc.(string); ok {
+					jobClass = jcs
+				}
+				arguments := argsMap["arguments"]
+
+				//Set the payload for the job as the contents of the sub arguments
+				if argumentsMap, ok := arguments.([]interface{}); ok {
+					job.Payload.Args = argumentsMap
+				}
+			}
+
+
+
+
+			if workerFunc, ok := workers[jobClass]; ok {
 				w.run(job, workerFunc)
 
 				logger.Debugf("done: (Job{%s} | %s | %v)", job.Queue, job.Payload.Class, job.Payload.Args)
 			} else {
-				errorLog := fmt.Sprintf("No worker for %s in queue %s with args %v", job.Payload.Class, job.Queue, job.Payload.Args)
+				errorLog := fmt.Sprintf("No worker for %s in queue %s with args %v", jobClass, job.Queue, jobArguments)
 				logger.Critical(errorLog)
 
 				conn, err := GetConn()
